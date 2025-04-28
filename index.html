@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Task Timer</title>
+   <style>
+    body {
+    font-family: Arial, sans-serif;
+    max-width: 800px;
+    margin: auto;
+    text-align: center;
+}
+
+table {
+    width: 100%;
+    margin-top: 20px;
+    border-collapse: collapse;
+}
+
+th, td {
+    padding: 10px;
+    border: 1px solid #ddd;
+}
+
+button {
+    padding: 10px;
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    font-size: 1rem;
+}
+
+button:hover {
+    background-color: #45a049;
+}
+
+h1, h2 {
+    color: #333;
+}
+
+   </style>
+</head>
+<body>
+    <h1>Task Manager with Timer</h1>
+
+    <form id="taskForm">
+        <label for="task_name">Task Name:</label>
+        <input type="text" id="task_name" required>
+
+        <label for="task_description">Task Description:</label>
+        <textarea id="task_description"></textarea>
+
+        <button type="button" onclick="addTask()">Add Task</button>
+    </form>
+
+    <h2>Saved Tasks</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Task Name</th>
+                <th>Description</th>
+                <th>Start Time</th>
+                <th>End Time</th>
+                <th>Timer</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for task in tasks %}
+            <tr id="task-{{ task[0] }}">
+                <td>{{ task[1] }}</td>
+                <td>{{ task[2] }}</td>
+                <td id="start-time-{{ task[0] }}">{{ task[3] }}</td>
+                <td id="end-time-{{ task[0] }}">{{ task[4] }}</td>
+                <td><span id="timerDisplay-{{ task[0] }}">00:00:00</span></td>
+                <td>
+                    <button type="button" id="start-btn-{{ task[0] }}" onclick="startTimer({{ task[0] }})">Start</button>
+                    <button type="button" id="pause-btn-{{ task[0] }}" onclick="pauseTimer({{ task[0] }})">Pause</button>
+                    <button type="button" id="stop-btn-{{ task[0] }}" onclick="stopTimer({{ task[0] }})">Stop</button>
+                    <button type="button" onclick="removeTask({{ task[0] }})">Remove</button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <script>
+        let taskTimers = {};  // Store timer intervals for each task  
+let taskStartTimes = {};  // Store the start times for each task
+let taskElapsedTimes = {};  // Store the elapsed time for each task
+
+window.addEventListener('load', () => {
+    fetch('/get_task_timers')
+        .then(response => response.json())
+        .then(data => {
+            for (const task of data.tasks) {
+                const { task_id, task_name, task_description, start_time, elapsed_time, end_time, status } = task;
+                // Check if the task is already in the table
+                if (!document.getElementById(`task-${task_id}`)) {
+                    addTaskToTable(task_id, task_name, task_description);
+                }
+
+                if (status === 'running' && start_time) {
+                    const startTime = new Date(start_time);
+                    const elapsed = elapsed_time || 0;
+                    restoreTimer(task_id, startTime, elapsed);
+                } else if (status === 'paused' && start_time) {
+                    const totalElapsed = elapsed_time || 0;
+                    updateTimerDisplay(task_id, totalElapsed);
+                }
+                if (end_time) {
+                    updateEndTimeDisplay(task_id, new Date(end_time));
+                }
+            }
+        });
+});
+function restoreTimer(taskId, startTime, elapsedTime) {
+    taskStartTimes[taskId] = startTime ? new Date(startTime) : null;
+    taskElapsedTimes[taskId] = elapsedTime || 0;
+
+    if (startTime) {
+        const totalElapsed = Math.floor((new Date() - taskStartTimes[taskId]) / 1000) + taskElapsedTimes[taskId];
+
+        taskTimers[taskId] = setInterval(() => {
+            const elapsed = Math.floor((new Date() - taskStartTimes[taskId]) / 1000) + taskElapsedTimes[taskId];
+            updateTimerDisplay(taskId, elapsed);
+        }, 1000);
+
+        document.getElementById(`start-time-${taskId}`).textContent = new Date(startTime).toLocaleString();
+        updateTimerDisplay(taskId, totalElapsed);
+
+        // Set buttons for running state
+        document.querySelector(`#start-btn-${taskId}`).disabled = true;
+        document.querySelector(`#pause-btn-${taskId}`).disabled = false;
+        document.querySelector(`#stop-btn-${taskId}`).disabled = false;
+    } else {
+        // Task is paused
+        updateTimerDisplay(taskId, taskElapsedTimes[taskId]);
+
+        // Set buttons for paused state
+        const pauseButton = document.querySelector(`#pause-btn-${taskId}`);
+        pauseButton.textContent = "Resume";
+        pauseButton.setAttribute("onclick", `resumeTimer(${taskId})`);
+
+        document.querySelector(`#start-btn-${taskId}`).disabled = true;
+        document.querySelector(`#pause-btn-${taskId}`).disabled = false;
+        document.querySelector(`#stop-btn-${taskId}`).disabled = false;
+    }
+}
+
+
+function addTask() {
+    const taskName = document.getElementById("task_name").value;
+    const taskDescription = document.getElementById("task_description").value;
+
+    fetch('/add_task', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_name: taskName, task_description: taskDescription })
+    })
+    .then(response => response.json())
+    .then(data => {
+        const taskId = data.task_id;
+        addTaskToTable(taskId, taskName, taskDescription);
+    });
+}
+
+function addTaskToTable(taskId, taskName, taskDescription) {
+    // Check if task already exists
+    const existingTaskRow = document.getElementById(`task-${taskId}`);
+    if (existingTaskRow) return;  // Task already exists, do nothing.
+
+    const tableBody = document.querySelector('tbody');
+    const row = document.createElement('tr');
+    row.id = `task-${taskId}`;
+    
+    row.innerHTML = `
+        <td>${taskName}</td>
+        <td>${taskDescription}</td>
+        <td id="start-time-${taskId}"></td>  
+        <td id="end-time-${taskId}"></td>  
+        <td><span id="timerDisplay-${taskId}">00:00:00</span></td>
+        <td>
+            <button id="start-btn-${taskId}" type="button" onclick="startTimer(${taskId})">Start</button>
+            <button id="pause-btn-${taskId}" type="button" onclick="pauseTimer(${taskId})" disabled>Pause</button>
+            <button id="stop-btn-${taskId}" type="button" onclick="stopTimer(${taskId})" disabled>Stop</button>
+            <button type="button" onclick="removeTask(${taskId})">Remove</button>
+        </td>
+    `;
+    
+    tableBody.appendChild(row);
+}
+
+function startTimer(taskId) {
+    if (taskTimers[taskId]) {
+        clearInterval(taskTimers[taskId]);
+    }
+
+    fetch(`/start_task/${taskId}`, { method: 'POST' });
+
+    const startTime = new Date();
+    document.getElementById(`start-time-${taskId}`).textContent = startTime.toLocaleString();
+    
+    taskStartTimes[taskId] = startTime;
+    taskTimers[taskId] = setInterval(() => {
+        const elapsedTime = Math.floor((new Date() - taskStartTimes[taskId]) / 1000) + (taskElapsedTimes[taskId] || 0);
+        updateTimerDisplay(taskId, elapsedTime);
+    }, 1000);
+    
+    document.querySelector(`#start-btn-${taskId}`).disabled = true;
+    document.querySelector(`#pause-btn-${taskId}`).disabled = false;
+    document.querySelector(`#stop-btn-${taskId}`).disabled = false;
+}
+
+function updateTimerDisplay(taskId, elapsedTime) {
+    const hours = Math.floor(elapsedTime / 3600);
+    const minutes = Math.floor((elapsedTime % 3600) / 60);
+    const seconds = elapsedTime % 60;
+    document.getElementById(`timerDisplay-${taskId}`).textContent = `${hours}:${minutes}:${seconds}`;
+}
+
+function pauseTimer(taskId) {
+    if (taskTimers[taskId]) {
+        clearInterval(taskTimers[taskId]); // Stop the timer
+    }
+
+    const timeElapsed = Math.floor((new Date() - taskStartTimes[taskId]) / 1000) + (taskElapsedTimes[taskId] || 0);
+    taskElapsedTimes[taskId] = timeElapsed; // Save elapsed time
+    taskStartTimes[taskId] = null;
+
+    fetch(`/pause_task/${taskId}`, { method: 'POST' });
+
+    // Update button text to "Resume"
+    const pauseButton = document.querySelector(`#pause-btn-${taskId}`);
+    pauseButton.textContent = "Resume";
+    pauseButton.setAttribute("onclick", `resumeTimer(${taskId})`);
+
+    // Disable start and stop buttons
+    document.querySelector(`#start-btn-${taskId}`).disabled = true;
+    document.querySelector(`#stop-btn-${taskId}`).disabled = false;
+}
+function resumeTimer(taskId) {
+    fetch(`/resume_task/${taskId}`, { method: 'POST' });
+
+    const startTime = new Date();
+    taskStartTimes[taskId] = startTime;
+
+    taskTimers[taskId] = setInterval(() => {
+        const elapsedTime = Math.floor((new Date() - taskStartTimes[taskId]) / 1000) + (taskElapsedTimes[taskId] || 0);
+        updateTimerDisplay(taskId, elapsedTime);
+    }, 1000);
+
+    // Update button text to "Pause"
+    const pauseButton = document.querySelector(`#pause-btn-${taskId}`);
+    pauseButton.textContent = "Pause";
+    pauseButton.setAttribute("onclick", `pauseTimer(${taskId})`);
+
+    // Disable start button, enable stop button
+    document.querySelector(`#start-btn-${taskId}`).disabled = true;
+    document.querySelector(`#stop-btn-${taskId}`).disabled = false;
+}
+
+
+function stopTimer(taskId) {
+    if (taskTimers[taskId]) {
+        clearInterval(taskTimers[taskId]);
+    }
+
+    fetch(`/stop_task/${taskId}`, { method: 'POST' });
+
+    taskStartTimes[taskId] = null;
+    taskElapsedTimes[taskId] = 0;
+
+    document.querySelector(`#start-btn-${taskId}`).disabled = true;
+    document.querySelector(`#pause-btn-${taskId}`).disabled = true;
+    document.querySelector(`#stop-btn-${taskId}`).disabled = true;
+
+    const endTime = new Date();
+    updateEndTimeDisplay(taskId, endTime);
+}
+function updateEndTimeDisplay(taskId, endTime) {
+    document.getElementById(`end-time-${taskId}`).textContent = endTime.toLocaleString();
+}
+
+function removeTask(taskId) {
+    fetch(`/remove_task/${taskId}`, { method: 'POST' })
+        .then(() => {
+            document.getElementById(`task-${taskId}`).remove();
+        });
+}
+
+    </script>
+</body>
+</html>
